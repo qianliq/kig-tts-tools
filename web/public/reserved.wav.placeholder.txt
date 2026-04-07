@@ -1,0 +1,2 @@
+Place your reserved wav file here and rename it to reserved.wav
+Path should be: web/public/reserved.wav
