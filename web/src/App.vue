@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const region = ref('cn')
 const apiKey = ref(import.meta.env.VITE_DASHSCOPE_API_KEY || '')
+const apiKeyCookieName = 'kig_tts_api_key'
 const model = ref('qwen3-tts-vc-realtime-2026-01-15')
 const preferredName = ref('my-cloned-voice')
 const sourceMode = ref('preset')
@@ -54,8 +55,33 @@ onBeforeUnmount(() => {
 })
 
 onMounted(() => {
+  loadApiKeyFromCookie()
   loadPresetWavList()
 })
+
+watch(apiKey, (value) => {
+  saveApiKeyToCookie(value)
+})
+
+function loadApiKeyFromCookie() {
+  const cookies = document.cookie ? document.cookie.split('; ') : []
+  const target = cookies.find((item) => item.startsWith(`${apiKeyCookieName}=`))
+  if (!target) {
+    return
+  }
+
+  const rawValue = target.slice(apiKeyCookieName.length + 1)
+  const decoded = decodeURIComponent(rawValue)
+  if (decoded) {
+    apiKey.value = decoded
+  }
+}
+
+function saveApiKeyToCookie(value) {
+  const encoded = encodeURIComponent(value || '')
+  const maxAgeSeconds = 60 * 60 * 24 * 365
+  document.cookie = `${apiKeyCookieName}=${encoded}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax`
+}
 
 function toDataUri(file) {
   return new Promise((resolve, reject) => {
