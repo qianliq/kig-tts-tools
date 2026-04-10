@@ -1,0 +1,11 @@
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: kig-tts-tools-web
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./data/wavs:/app/public/wavs
+    restart: unless-stopped
