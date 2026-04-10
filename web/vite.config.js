@@ -21,16 +21,12 @@ export default defineConfig({
   server: {
     allowedHosts: ['frp.qadg.xyz'],
     proxy: {
-      '/relay': {
-        target: 'http://127.0.0.1:8787',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/relay/, ''),
-      },
       '/proxy-cn': {
         target: 'https://dashscope.aliyuncs.com',
         changeOrigin: true,
         secure: true,
-        ws: true,
+        timeout: 120000,
+        proxyTimeout: 120000,
         rewrite: (path) => path.replace(/^\/proxy-cn/, ''),
       },
       '/proxy-cn-ws': {
@@ -45,7 +41,8 @@ export default defineConfig({
         target: 'https://dashscope-intl.aliyuncs.com',
         changeOrigin: true,
         secure: true,
-        ws: true,
+        timeout: 120000,
+        proxyTimeout: 120000,
         rewrite: (path) => path.replace(/^\/proxy-intl/, ''),
       },
       '/proxy-intl-ws': {

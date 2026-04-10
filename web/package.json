@@ -4,15 +4,15 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "sync:wavs": "node scripts/generate-wav-list.mjs",
+    "predev": "npm run sync:wavs",
     "dev": "vite",
-    "relay": "node relay-server.js",
+    "prebuild": "npm run sync:wavs",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.5.32",
-    "express": "^4.21.2",
-    "ws": "^8.18.3"
+    "vue": "^3.5.32"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.5",

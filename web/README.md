@@ -1,24 +1,17 @@
-# Qwen3 TTS Web Demo (Vue)
+# kig-tts-tools (Web)
 
-这个示例实现了你在设计文档中的目标（使用 relay 转发）：
+前端页面用于声音复刻与文本转语音，采用纯前端调用方式：
 
 - 支持上传本地 wav，或者读取预留 wav 文件
-- 网页调用本地 relay 完成声音复刻并创建 `voice`
-- relay 连接 Qwen3 Realtime TTS 并转发音频
-- 网页接收转发后的音频并直接播放
+- 前端直接调用声音复刻接口创建 `voice`
+- 前端直接连接 Realtime WebSocket 获取音频
+- 页面拿到音频后直接播放
 
 ## 1. 安装与启动
 
 ```bash
 cd web
 npm install
-npm run relay
-```
-
-另开终端执行：
-
-```bash
-cd web
 npm run dev
 ```
 
@@ -34,20 +27,32 @@ VITE_DASHSCOPE_API_KEY=sk-xxx
 
 ## 3. 预留 WAV 文件
 
-如果你选择“使用预留 wav”，请将文件放到：
+如果你选择“使用预留 wav”，请将文件统一放到：
 
-`web/public/reserved.wav`
+`web/public/wavs/`
 
-启动后页面中默认会读取 `/reserved.wav`。
+页面会读取 `/wavs/wav-list.json`，并自动展示可选 WAV 列表。
 
-## 4. relay 说明
+项目已配置：
 
-- relay 服务入口文件：`web/relay-server.js`
-- 前端通过 `/relay/clone`、`/relay/synthesize` 调用 relay
-- Vite 代理会将 `/relay/*` 转发到 `http://127.0.0.1:8787`
+- `npm run dev` 前自动执行 `npm run sync:wavs`
+- `npm run build` 前自动执行 `npm run sync:wavs`
+
+如需手动刷新列表可执行：
+
+```bash
+npm run sync:wavs
+```
+
+## 4. 代理说明
+
+- 前端通过 Vite 代理访问 DashScope：`/proxy-cn`、`/proxy-intl`
+- 前端通过 Vite WS 代理访问 Realtime：`/proxy-cn-ws`、`/proxy-intl-ws`
+- WebSocket 鉴权通过 URL 参数 `api_key` 传递，代理会注入 `Authorization` 请求头
 
 ## 5. 重要注意项
 
 - 声音复刻 (`target_model`) 与语音合成 (`model`) 必须一致，否则会失败。
 - 中国内地与国际区域的 API Key 不互通，请在页面选择对应地域。
-- 当前页面仍由用户输入 API Key。若用于生产，建议把 API Key 固定在服务端环境变量。
+- 当前页面由用户输入 API Key，适合本地开发演示。生产环境建议改为后端托管密钥。
+- 若出现 `ERR_CONNECTION_RESET`，请先重启 `npm run dev`，并将上传的 WAV 控制在 8MB 以内。

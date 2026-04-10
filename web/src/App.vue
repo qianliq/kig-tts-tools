@@ -1,12 +1,13 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const region = ref('cn')
 const apiKey = ref(import.meta.env.VITE_DASHSCOPE_API_KEY || '')
 const model = ref('qwen3-tts-vc-realtime-2026-01-15')
 const preferredName = ref('my-cloned-voice')
-const sourceMode = ref('upload')
-const presetWavUrl = ref('/reserved.wav')
+const sourceMode = ref('preset')
+const presetWavUrl = ref('')
+const presetWavOptions = ref([])
 const uploadedFile = ref(null)
 const voiceId = ref('')
 const inputText = ref('你好，这是一个基于声音复刻的网页 TTS 演示。')
@@ -14,8 +15,21 @@ const busy = ref(false)
 const synthMode = ref('server_commit')
 const statusLogs = ref([])
 const audioUrl = ref('')
+const wsSampleRate = 24000
+const maxWavSizeBytes = 8 * 1024 * 1024
 
-const relayBase = computed(() => '/relay')
+const regionConfig = computed(() => {
+  if (region.value === 'intl') {
+    return {
+      customizeBase: '/proxy-intl',
+      wsBase: '/proxy-intl-ws'
+    }
+  }
+  return {
+    customizeBase: '/proxy-cn',
+    wsBase: '/proxy-cn-ws'
+  }
+})
 
 function pushLog(message) {
   statusLogs.value = [...statusLogs.value, `[${new Date().toLocaleTimeString()}] ${message}`].slice(-12)
@@ -30,6 +44,10 @@ function clearAudio() {
 
 onBeforeUnmount(() => {
   clearAudio()
+})
+
+onMounted(() => {
+  loadPresetWavList()
 })
 
 function toDataUri(file) {
@@ -49,6 +67,10 @@ async function getWavFile() {
     return uploadedFile.value
   }
 
+  if (!presetWavUrl.value) {
+    throw new Error('请先从列表中选择一个预留 wav')
+  }
+
   const response = await fetch(presetWavUrl.value)
   if (!response.ok) {
     throw new Error(`读取预留 wav 失败: ${response.status}`)
@@ -56,6 +78,45 @@ async function getWavFile() {
 
   const blob = await response.blob()
   return new File([blob], 'reserved.wav', { type: 'audio/wav' })
+}
+
+async function loadPresetWavList() {
+  try {
+    const response = await fetch('/wavs/wav-list.json', { cache: 'no-store' })
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+
+    const list = await response.json()
+    if (!Array.isArray(list)) {
+      throw new Error('wav-list.json 格式错误')
+    }
+
+    presetWavOptions.value = list
+      .filter((item) => item && typeof item.name === 'string' && typeof item.url === 'string')
+      .map((item) => ({ name: item.name, url: item.url }))
+
+    if (!presetWavUrl.value && presetWavOptions.value.length) {
+      presetWavUrl.value = presetWavOptions.value[0].url
+    }
+
+    pushLog(`已加载预留 wav 列表: ${presetWavOptions.value.length} 个`)
+  } catch (_error) {
+    presetWavOptions.value = []
+    presetWavUrl.value = ''
+    pushLog('未读取到 wav 列表，请先执行 npm run sync:wavs')
+  }
+}
+
+function validateWavFileSize(file) {
+  if (!file || typeof file.size !== 'number') {
+    return
+  }
+  if (file.size > maxWavSizeBytes) {
+    const maxMb = (maxWavSizeBytes / (1024 * 1024)).toFixed(0)
+    const gotMb = (file.size / (1024 * 1024)).toFixed(2)
+    throw new Error(`WAV 文件过大（${gotMb} MB）。请控制在 ${maxMb} MB 以内后重试`) 
+  }
 }
 
 function handleFileChange(event) {
@@ -92,23 +153,10 @@ async function safeReadJson(response) {
   }
 }
 
-async function ensureRelayReady() {
-  try {
-    const response = await fetch(`${relayBase.value}/health`)
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-  } catch (_error) {
-    throw new Error('relay 服务不可用，请先在 web 目录运行: npm run relay')
-  }
-}
-
 async function createVoiceFromWav() {
   if (!apiKey.value) {
     throw new Error('请填写 API Key')
   }
-
-  await ensureRelayReady()
 
   const safePreferredName = normalizePreferredName(preferredName.value)
   if (safePreferredName !== preferredName.value) {
@@ -117,31 +165,36 @@ async function createVoiceFromWav() {
   }
 
   const wavFile = await getWavFile()
+  validateWavFileSize(wavFile)
   const dataUri = await toDataUri(wavFile)
 
   pushLog('正在调用声音复刻接口...')
   let response
   try {
-    response = await fetch(`${relayBase.value}/clone`, {
+    response = await fetch(`${regionConfig.value.customizeBase}/api/v1/services/audio/tts/customization`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: `Bearer ${apiKey.value}`,
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
-        apiKey: apiKey.value,
-        region: region.value,
-        targetModel: model.value,
-        preferredName: safePreferredName,
-        audioDataUri: dataUri
+        model: 'qwen-voice-enrollment',
+        input: {
+          action: 'create',
+          target_model: model.value,
+          preferred_name: safePreferredName,
+          audio: {
+            data: dataUri
+          }
+        }
       })
     })
   } catch (_error) {
-    throw new Error('声音复刻请求未到达服务端，请检查 dev 服务是否已重启且代理可用')
+    throw new Error('声音复刻请求失败（网络已重置）。请重启 npm run dev，并尝试更小的 WAV 文件')
   }
 
   const result = await safeReadJson(response)
   if (!response.ok) {
-    if (response.status === 502 && !result?.error) {
-      throw new Error('声音复刻失败: HTTP 502（relay 已连接但上游网关失败，请稍后重试或检查地域与模型）')
-    }
     throw new Error(result?.error || result?.message || result?.code || `声音复刻失败: HTTP ${response.status}`)
   }
 
@@ -163,40 +216,121 @@ async function synthesizeSpeech() {
     throw new Error('请输入要合成的文本')
   }
 
-  await ensureRelayReady()
-
   const usedVoice = voiceId.value || (await createVoiceFromWav())
   clearAudio()
-  pushLog('正在通过 relay 转发合成音频...')
-  const response = await fetch(`${relayBase.value}/synthesize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      apiKey: apiKey.value,
-      region: region.value,
-      model: model.value,
-      voice: usedVoice,
-      text: inputText.value,
-      mode: synthMode.value
-    })
+  pushLog('正在直连 Realtime WebSocket 合成音频...')
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl =
+    `${wsProtocol}//${window.location.host}` +
+    `${regionConfig.value.wsBase}/api-ws/v1/realtime?model=${encodeURIComponent(model.value)}&api_key=${encodeURIComponent(apiKey.value)}`
+
+  const audioChunks = []
+
+  await new Promise((resolve, reject) => {
+    const socket = new WebSocket(wsUrl)
+    let settled = false
+
+    const settleReject = (message) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      try {
+        socket.close()
+      } catch (_error) {
+        // no-op
+      }
+      reject(new Error(message))
+    }
+
+    const settleResolve = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      resolve()
+    }
+
+    const timeout = setTimeout(() => {
+      settleReject('Realtime 合成超时（60s）')
+    }, 60000)
+
+    socket.onopen = () => {
+      socket.send(
+        JSON.stringify({
+          type: 'session.update',
+          session: {
+            mode: synthMode.value,
+            voice: usedVoice,
+            response_format: 'mp3',
+            sample_rate: wsSampleRate
+          }
+        })
+      )
+
+      socket.send(
+        JSON.stringify({
+          type: 'input_text_buffer.append',
+          text: inputText.value
+        })
+      )
+
+      if (synthMode.value === 'commit') {
+        socket.send(JSON.stringify({ type: 'input_text_buffer.commit' }))
+      }
+
+      socket.send(JSON.stringify({ type: 'session.finish' }))
+    }
+
+    socket.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(String(event.data))
+
+        if (payload.type === 'response.audio.delta' && payload.delta) {
+          const binary = atob(payload.delta)
+          const bytes = new Uint8Array(binary.length)
+          for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i)
+          }
+          audioChunks.push(bytes)
+        }
+
+        if (payload.type === 'error') {
+          clearTimeout(timeout)
+          settleReject(payload.message || 'Realtime 返回错误')
+          return
+        }
+
+        if (payload.type === 'session.finished') {
+          clearTimeout(timeout)
+          settleResolve()
+        }
+      } catch (_error) {
+        clearTimeout(timeout)
+        settleReject('解析 Realtime 消息失败')
+      }
+    }
+
+    socket.onerror = () => {
+      clearTimeout(timeout)
+      settleReject('WebSocket 连接失败，请检查代理或 API Key')
+    }
+
+    socket.onclose = (event) => {
+      clearTimeout(timeout)
+      if (!settled && event.code !== 1000) {
+        settleReject(`WebSocket 异常关闭: code=${event.code}`)
+      }
+    }
   })
 
-  if (!response.ok) {
-    const errorBody = await safeReadJson(response)
-    if (response.status === 502 && !errorBody?.error) {
-      throw new Error('合成失败: HTTP 502（relay 已连接但上游网关失败）')
-    }
-    const message = errorBody?.error || `合成失败: HTTP ${response.status}`
-    throw new Error(message)
-  }
-
-  const blob = await response.blob()
+  const blob = new Blob(audioChunks, { type: 'audio/mpeg' })
   if (!blob.size) {
-    throw new Error('转发服务未返回音频数据')
+    throw new Error('Realtime 未返回音频数据')
   }
 
   audioUrl.value = URL.createObjectURL(blob)
-  pushLog('合成完成，可在页面中播放音频（relay）')
+  pushLog('合成完成，可在页面中播放音频')
 }
 
 async function runAll() {
@@ -225,11 +359,7 @@ async function createVoiceOnly() {
 <template>
   <div class="page">
     <header class="hero">
-      <p class="tag">Qwen3 TTS · Vue 单页演示</p>
-      <h1>上传或使用预置 WAV，直接网页合成并播放语音</h1>
-      <p class="sub">
-        无需单独后端。页面会先用 WAV 进行声音复刻，再调用实时 TTS 接口，最后生成可播放音频。
-      </p>
+      <p class="tag">kig-tts-tools</p>
     </header>
 
     <main class="grid">
@@ -241,24 +371,8 @@ async function createVoiceOnly() {
         </label>
 
         <label>
-          地域
-          <select v-model="region">
-            <option value="cn">中国内地（北京）</option>
-            <option value="intl">国际（新加坡）</option>
-          </select>
-        </label>
-
-        <label>
           模型（声音复刻与合成必须一致）
           <input v-model="model" type="text" />
-        </label>
-
-        <label>
-          合成模式
-          <select v-model="synthMode">
-            <option value="server_commit">server_commit</option>
-            <option value="commit">commit</option>
-          </select>
         </label>
       </section>
 
@@ -277,20 +391,18 @@ async function createVoiceOnly() {
 
         <div v-else>
           <label>
-            预留 wav 路径
-            <input v-model="presetWavUrl" type="text" placeholder="/reserved.wav" />
+            预留 wav 列表
+            <select v-model="presetWavUrl" :disabled="!presetWavOptions.length">
+              <option value="" disabled>
+                {{ presetWavOptions.length ? '请选择 wav' : '无可用 wav（先执行 npm run sync:wavs）' }}
+              </option>
+              <option v-for="item in presetWavOptions" :key="item.url" :value="item.url">
+                {{ item.name }}
+              </option>
+            </select>
           </label>
         </div>
 
-        <label>
-          复刻名称
-          <input v-model="preferredName" type="text" />
-        </label>
-
-        <label>
-          已生成 voice
-          <input v-model="voiceId" type="text" placeholder="可留空，点击合成时自动生成" />
-        </label>
       </section>
 
       <section class="card wide">
