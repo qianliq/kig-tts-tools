@@ -13,8 +13,10 @@ const voiceId = ref('')
 const inputText = ref('你好，这是一个基于声音复刻的网页 TTS 演示。')
 const busy = ref(false)
 const synthMode = ref('server_commit')
+const autoPlayAfterReceive = ref(true)
 const statusLogs = ref([])
 const audioUrl = ref('')
+const audioPlayerRef = ref(null)
 const wsSampleRate = 24000
 const maxWavSizeBytes = 8 * 1024 * 1024
 
@@ -38,6 +40,11 @@ function pushLog(message) {
 function clearAudio() {
   if (audioUrl.value) {
     URL.revokeObjectURL(audioUrl.value)
+  }
+  if (audioPlayerRef.value) {
+    audioPlayerRef.value.pause()
+    audioPlayerRef.value.removeAttribute('src')
+    audioPlayerRef.value.load()
   }
   audioUrl.value = ''
 }
@@ -225,6 +232,87 @@ async function synthesizeSpeech() {
     `${regionConfig.value.wsBase}/api-ws/v1/realtime?model=${encodeURIComponent(model.value)}&api_key=${encodeURIComponent(apiKey.value)}`
 
   const audioChunks = []
+  const player = audioPlayerRef.value
+  let mediaSource = null
+  let sourceBuffer = null
+  let mediaSourceUrl = ''
+  const pendingSegments = []
+  let streamClosed = false
+
+  const canUseStreaming =
+    !!player &&
+    typeof window !== 'undefined' &&
+    'MediaSource' in window &&
+    window.MediaSource.isTypeSupported('audio/mpeg')
+
+  const appendQueuedSegments = () => {
+    if (!sourceBuffer || sourceBuffer.updating) {
+      return
+    }
+    const next = pendingSegments.shift()
+    if (next) {
+      sourceBuffer.appendBuffer(next)
+      return
+    }
+    if (streamClosed && mediaSource && mediaSource.readyState === 'open') {
+      mediaSource.endOfStream()
+    }
+  }
+
+  const tryAutoPlay = () => {
+    if (!player || !player.paused) {
+      return
+    }
+    player.play().catch(() => {
+      // Browsers may block autoplay until user interacts with controls.
+    })
+  }
+
+  const playWhenReady = () => {
+    if (!player) {
+      return
+    }
+
+    let done = false
+    const cleanup = () => {
+      if (done) {
+        return
+      }
+      done = true
+      player.removeEventListener('canplay', onCanPlay)
+      clearTimeout(fallbackTimer)
+    }
+
+    const onCanPlay = () => {
+      cleanup()
+      tryAutoPlay()
+    }
+
+    const fallbackTimer = setTimeout(() => {
+      cleanup()
+      tryAutoPlay()
+    }, 1200)
+
+    player.addEventListener('canplay', onCanPlay, { once: true })
+  }
+
+  if (canUseStreaming) {
+    mediaSource = new window.MediaSource()
+    mediaSourceUrl = URL.createObjectURL(mediaSource)
+    player.src = mediaSourceUrl
+
+    mediaSource.addEventListener('sourceopen', () => {
+      if (!mediaSource || mediaSource.readyState !== 'open') {
+        return
+      }
+      sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg')
+      sourceBuffer.mode = 'sequence'
+      sourceBuffer.addEventListener('updateend', () => {
+        appendQueuedSegments()
+      })
+      appendQueuedSegments()
+    })
+  }
 
   await new Promise((resolve, reject) => {
     const socket = new WebSocket(wsUrl)
@@ -293,6 +381,11 @@ async function synthesizeSpeech() {
             bytes[i] = binary.charCodeAt(i)
           }
           audioChunks.push(bytes)
+
+          if (canUseStreaming) {
+            pendingSegments.push(bytes)
+            appendQueuedSegments()
+          }
         }
 
         if (payload.type === 'error') {
@@ -303,6 +396,8 @@ async function synthesizeSpeech() {
 
         if (payload.type === 'session.finished') {
           clearTimeout(timeout)
+          streamClosed = true
+          appendQueuedSegments()
           settleResolve()
         }
       } catch (_error) {
@@ -325,11 +420,26 @@ async function synthesizeSpeech() {
   })
 
   const blob = new Blob(audioChunks, { type: 'audio/mpeg' })
+
   if (!blob.size) {
     throw new Error('Realtime 未返回音频数据')
   }
 
   audioUrl.value = URL.createObjectURL(blob)
+  if (canUseStreaming && mediaSourceUrl) {
+    URL.revokeObjectURL(mediaSourceUrl)
+    if (player) {
+      player.src = audioUrl.value
+      player.load()
+      if (autoPlayAfterReceive.value) {
+        playWhenReady()
+      }
+    }
+  } else {
+    if (autoPlayAfterReceive.value) {
+      playWhenReady()
+    }
+  }
   pushLog('合成完成，可在页面中播放音频')
 }
 
@@ -344,16 +454,6 @@ async function runAll() {
   }
 }
 
-async function createVoiceOnly() {
-  busy.value = true
-  try {
-    await createVoiceFromWav()
-  } catch (error) {
-    pushLog(`失败: ${error instanceof Error ? error.message : String(error)}`)
-  } finally {
-    busy.value = false
-  }
-}
 </script>
 
 <template>
@@ -366,12 +466,20 @@ async function createVoiceOnly() {
       <section class="card">
         <h2>1) 接口配置</h2>
         <label>
-          API Key
+          Qwen API Key
+          <a
+            class="help-link"
+            href="https://help.aliyun.com/zh/model-studio/get-api-key"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            如何获取 Key
+          </a>
           <input v-model="apiKey" type="password" placeholder="sk-..." />
         </label>
 
         <label>
-          模型（声音复刻与合成必须一致）
+          模型
           <input v-model="model" type="text" />
         </label>
       </section>
@@ -412,16 +520,19 @@ async function createVoiceOnly() {
           <textarea v-model="inputText" rows="6" />
         </label>
 
+        <label class="switch-row">
+          <span>接收完成后自动播放</span>
+          <input v-model="autoPlayAfterReceive" class="switch-input" type="checkbox" />
+          <span class="switch-slider" aria-hidden="true"></span>
+        </label>
+
         <div class="actions">
-          <button :disabled="busy" @click="createVoiceOnly">
-            {{ busy ? '处理中...' : '仅生成 voice' }}
-          </button>
           <button class="primary" :disabled="busy" @click="runAll">
-            {{ busy ? '处理中...' : '生成并播放音频' }}
+            {{ busy ? '处理中...' : '生成音频' }}
           </button>
         </div>
 
-        <audio v-if="audioUrl" :src="audioUrl" controls></audio>
+        <audio ref="audioPlayerRef" :src="audioUrl || undefined" controls></audio>
 
         <div class="log">
           <p v-for="item in statusLogs" :key="item">{{ item }}</p>

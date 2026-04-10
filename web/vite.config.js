@@ -19,7 +19,8 @@ function attachWsAuthHeader(proxy) {
 export default defineConfig({
   plugins: [vue()],
   server: {
-    allowedHosts: ['frp.qadg.xyz'],
+    host: '0.0.0.0',
+    allowedHosts: ['localhost', '127.0.0.1', 'frp.qadg.xyz'],
     proxy: {
       '/proxy-cn': {
         target: 'https://dashscope.aliyuncs.com',
